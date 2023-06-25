@@ -2,7 +2,7 @@
 robo8080さんの[AIｽﾀｯｸﾁｬﾝ2](https://github.com/robo8080/AI_StackChan2)をベースに、M5Stack CoreS3の内蔵カメラを扱うプログラムを組み込みました。
 <br><br>
 
-![画像1](images/image1.JPG)<br><br>
+![画像1](images/image1.png)<br><br>
 
 ### 主な仕様
 - 顔検出するとｽﾀｯｸﾁｬﾝが話しかけてくれます(ずんだもんVer)。
