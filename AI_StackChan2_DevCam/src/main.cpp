@@ -1394,6 +1394,11 @@ void loop()
       esp_camera_fb_return(fb);
 
     }
+    if(isFaceDetected && isSilentMode){
+      avatar.setExpression(Expression::Happy);
+      delay(2000);
+      avatar.setExpression(Expression::Neutral);
+    }
   }
 #endif
 
