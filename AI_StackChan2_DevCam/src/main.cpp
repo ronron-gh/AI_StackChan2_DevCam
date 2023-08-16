@@ -1361,6 +1361,51 @@ void switch_monologue_mode(){
     Serial.println("mp3 begin");
 }
 
+// robo8080さんの音声認識を関数化
+void voice_recognition(void)
+{
+  M5.Speaker.tone(1000, 100);
+  delay(200);
+  M5.Speaker.end();
+  bool prev_servo_home = servo_home;
+  random_speak = true;
+  random_time = -1;
+#ifdef USE_SERVO
+  servo_home = true;
+#endif
+  avatar.setExpression(Expression::Happy);
+  avatar.setSpeechText("御用でしょうか？");
+  M5.Speaker.end();
+  String ret;
+  if(OPENAI_API_KEY != STT_API_KEY){
+    Serial.println("Google STT");
+    ret = SpeechToText(true);
+  } else {
+    Serial.println("Whisper STT");
+    ret = SpeechToText(false);
+  }
+#ifdef USE_SERVO
+  servo_home = prev_servo_home;
+#endif
+  Serial.println("音声認識終了");
+  Serial.println("音声認識結果");
+  if(ret != "") {
+    Serial.println(ret);
+    if (!mp3->isRunning() && speech_text=="" && speech_text_buffer == "") {
+      exec_chatGPT(ret);
+    }
+  } else {
+    Serial.println("音声認識失敗");
+    avatar.setExpression(Expression::Sad);
+    avatar.setSpeechText("聞き取れませんでした");
+    delay(2000);
+    avatar.setSpeechText("");
+    avatar.setExpression(Expression::Neutral);
+  } 
+  M5.Speaker.begin();
+}
+
+
 void loop()
 {
   static int lastms = 0;
@@ -1385,8 +1430,8 @@ void loop()
 
       avatar.set_isSubWindowEnable(false);
   
-      //voice_recognition();
-      exec_chatGPT(random_words[random(18)]);
+      //voice_recognition();                    //音声認識
+      exec_chatGPT(random_words[random(18)]);   //独り言
 
       // フレームバッファを読み捨てる（ｽﾀｯｸﾁｬﾝが応答した後に、過去のフレームで顔検出してしまうのを防ぐため）
       M5.In_I2C.release();
@@ -1431,6 +1476,9 @@ void loop()
 #if defined(ENABLE_FACE_DETECT)
         avatar.set_isSubWindowEnable(false);
 #endif
+
+        voice_recognition();
+#if 0
         M5.Speaker.tone(1000, 100);
         delay(200);
         M5.Speaker.end();
@@ -1470,6 +1518,7 @@ void loop()
           avatar.setExpression(Expression::Neutral);
         } 
         M5.Speaker.begin();
+#endif
       }
 #ifdef USE_SERVO
       if (box_servo.contain(t.x, t.y))
