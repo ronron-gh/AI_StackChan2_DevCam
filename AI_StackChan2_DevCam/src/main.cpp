@@ -720,7 +720,8 @@ void StatusCallback(void *cbData, int code, const char *string)
 #ifdef USE_SERVO
 #define START_DEGREE_VALUE_X 90
 //#define START_DEGREE_VALUE_Y 90
-#define START_DEGREE_VALUE_Y 85 //
+//#define START_DEGREE_VALUE_Y 85 
+#define START_DEGREE_VALUE_Y 80 
 ServoEasing servo_x;
 ServoEasing servo_y;
 #endif
@@ -748,6 +749,12 @@ void lipSync(void *args)
 }
 
 bool servo_home = false;
+const int CENTER_X = 160;
+const int CENTER_Y = 120;
+int g_face_centroid_x = CENTER_X;
+int g_face_centroid_y = CENTER_Y;
+int g_angle_x = 0;
+int g_angle_y = 0;
 
 void servo(void *args)
 {
@@ -759,15 +766,32 @@ void servo(void *args)
 #ifdef USE_SERVO
     if(!servo_home)
     {
-    avatar->getGaze(&gazeY, &gazeX);
-    servo_x.setEaseTo(START_DEGREE_VALUE_X + (int)(15.0 * gazeX));
-    if(gazeY < 0) {
-      int tmp = (int)(10.0 * gazeY);
-      if(tmp > 10) tmp = 10;
-      servo_y.setEaseTo(START_DEGREE_VALUE_Y + tmp);
-    } else {
-      servo_y.setEaseTo(START_DEGREE_VALUE_Y + (int)(10.0 * gazeY));
-    }
+      if(!isSilentMode){
+        avatar->getGaze(&gazeY, &gazeX);
+        servo_x.setEaseTo(START_DEGREE_VALUE_X + (int)(15.0 * gazeX));
+        if(gazeY < 0) {
+          int tmp = (int)(10.0 * gazeY);
+          if(tmp > 10) tmp = 10;
+          servo_y.setEaseTo(START_DEGREE_VALUE_Y + tmp);
+        } else {
+          servo_y.setEaseTo(START_DEGREE_VALUE_Y + (int)(10.0 * gazeY));
+        }
+      }
+      else{
+        int diff_x = g_face_centroid_x - CENTER_X;
+        int diff_y = g_face_centroid_y - CENTER_Y;
+        g_angle_x += 0.05 * diff_x;
+        g_angle_y += 0.05 * diff_y;
+        
+        if(g_angle_x > 30) g_angle_x = 30;
+        else if(g_angle_x < -30) g_angle_x = -30;
+
+        if(g_angle_y > 5) g_angle_y = 5;
+        else if(g_angle_y < -15) g_angle_y = -15;
+
+        servo_x.setEaseTo(START_DEGREE_VALUE_X + g_angle_x);
+        servo_y.setEaseTo(START_DEGREE_VALUE_Y + g_angle_y);
+      }
     } else {
 //     avatar->setRotation(gazeX * 5);
 //     float b = avatar->getBreath();
@@ -959,6 +983,10 @@ static void draw_face_boxes(fb_data_t *fb, std::list<dl::detect::result_t> *resu
         if((y + h) > fb->height){
             h = fb->height - y;
         }
+
+        //サイレントモード時の顔追尾用
+        g_face_centroid_x = x + w * 0.5;
+        g_face_centroid_y = y + h * 0.5;
 
         //Serial.printf("x:%d y:%d w:%d h:%d\n", x, y, w, h);
 
@@ -1426,23 +1454,29 @@ void loop()
   if (!mp3->isRunning()) {
     bool isFaceDetected;
     isFaceDetected = camera_capture_and_face_detect();
-    if(isFaceDetected && !isSilentMode){
+    if(!isSilentMode){
+      if(isFaceDetected){
 
-      avatar.set_isSubWindowEnable(false);
-  
-      //voice_recognition();                    //音声認識
-      exec_chatGPT(random_words[random(18)]);   //独り言
+        avatar.set_isSubWindowEnable(false);
+    
+        voice_recognition();                    //音声認識
+        //exec_chatGPT(random_words[random(18)]);   //独り言
 
-      // フレームバッファを読み捨てる（ｽﾀｯｸﾁｬﾝが応答した後に、過去のフレームで顔検出してしまうのを防ぐため）
-      M5.In_I2C.release();
-      camera_fb_t *fb = esp_camera_fb_get();
-      esp_camera_fb_return(fb);
+        // フレームバッファを読み捨てる（ｽﾀｯｸﾁｬﾝが応答した後に、過去のフレームで顔検出してしまうのを防ぐため）
+        M5.In_I2C.release();
+        camera_fb_t *fb = esp_camera_fb_get();
+        esp_camera_fb_return(fb);
+
+      }
 
     }
-    if(isFaceDetected && isSilentMode){
-      avatar.setExpression(Expression::Happy);
-      delay(2000);
-      avatar.setExpression(Expression::Neutral);
+    else{
+      if(isFaceDetected){
+        avatar.setExpression(Expression::Happy);
+      }
+      else{
+        avatar.setExpression(Expression::Neutral);
+      }
     }
   }
 #endif
@@ -1524,6 +1558,10 @@ void loop()
       if (box_servo.contain(t.x, t.y))
       {
         servo_home = !servo_home;
+        g_face_centroid_x = CENTER_X;
+        g_face_centroid_y = CENTER_Y;
+        g_angle_x = 0;
+        g_angle_y = 0;
         M5.Speaker.tone(1000, 100);
       }
 #endif
