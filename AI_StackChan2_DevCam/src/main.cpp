@@ -27,7 +27,11 @@
 #include "Audio.h"
 #include "CloudSpeechClient.h"
 
-#if defined( ENABLE_FACE_DETECT )
+#include <ESP8266FtpServer.h>
+#include "SpiRamJsonDocument.h"
+#include <base64.h>
+
+#if defined( ENABLE_CAMERA )
 #include <esp_camera.h>
 #include <fb_gfx.h>
 #include <vector>
@@ -82,7 +86,7 @@ static camera_config_t camera_config = {
 bool isSubWindowON = true;
 bool isSilentMode = false;
 
-#endif    //ENABLE_FACE_DETECT
+#endif    //ENABLE_CAMERA
 
 
 
@@ -133,6 +137,8 @@ const Expression expressions_table[] = {
 };
 
 ESP32WebServer server(80);
+FtpServer ftpSrv;   //set #define FTP_DEBUG in ESP8266FtpServer.h to see ftp verbose on serial
+
 
 //---------------------------------------------
 String OPENAI_API_KEY = "";
@@ -255,8 +261,11 @@ static const char ROLE_HTML[] PROGMEM = R"KEWL(
 
 String speech_text = "";
 String speech_text_buffer = "";
-DynamicJsonDocument chat_doc(1024*10);
-String json_ChatString = "{\"model\": \"gpt-3.5-turbo\",\"messages\": [{\"role\": \"user\", \"content\": \"""\"}]}";
+//DynamicJsonDocument chat_doc(1024*10);
+SpiRamJsonDocument chat_doc(0);     // PSRAMから確保するように変更。サイズの確保はsetup()で実施（初期化後でないとPSRAMが使えないため）。
+
+//String json_ChatString = "{\"model\": \"gpt-3.5-turbo\",\"messages\": [{\"role\": \"user\", \"content\": \"""\"}]}";
+String json_ChatString = "{\"model\": \"gpt-4o\",\"messages\": [{\"role\": \"user\", \"content\": \"""\"}]}";
 String Role_JSON = "";
 
 bool init_chat_doc(const char *data)
@@ -392,61 +401,6 @@ String chatGpt(String json_string) {
 
 String InitBuffer = "";
 
-void handle_chat() {
-  static String response = "";
-  // tts_parms_no = 1;
-  String text = server.arg("text");
-  String speaker = server.arg("voice");
-  if(speaker != "") {
-    TTS_PARMS = TTS_SPEAKER + speaker;
-  }
-  Serial.println(InitBuffer);
-  init_chat_doc(InitBuffer.c_str());
-  // 質問をチャット履歴に追加
-  chatHistory.push_back(text);
-   // チャット履歴が最大数を超えた場合、古い質問と回答を削除
-  if (chatHistory.size() > MAX_HISTORY * 2)
-  {
-    chatHistory.pop_front();
-    chatHistory.pop_front();
-  }
-
-  for (int i = 0; i < chatHistory.size(); i++)
-  {
-    JsonArray messages = chat_doc["messages"];
-    JsonObject systemMessage1 = messages.createNestedObject();
-    if(i % 2 == 0) {
-      systemMessage1["role"] = "user";
-    } else {
-      systemMessage1["role"] = "assistant";
-    }
-    systemMessage1["content"] = chatHistory[i];
-  }
-
-  String json_string;
-  serializeJson(chat_doc, json_string);
-  if(speech_text=="" && speech_text_buffer == "") {
-    response = chatGpt(json_string);
-    speech_text = response;
-    // 返答をチャット履歴に追加
-    chatHistory.push_back(response);
-  } else {
-    response = "busy";
-  }
-  // Serial.printf("chatHistory.max_size %d \n",chatHistory.max_size());
-  // Serial.printf("chatHistory.size %d \n",chatHistory.size());
-  // for (int i = 0; i < chatHistory.size(); i++)
-  // {
-  //   Serial.print(i);
-  //   Serial.println("= "+chatHistory[i]);
-  // }
-  serializeJsonPretty(chat_doc, json_string);
-  Serial.println("====================");
-  Serial.println(json_string);
-  Serial.println("====================");
-  server.send(200, "text/html", String(HEAD)+String("<body>")+response+String("</body>"));
-}
-
 void exec_chatGPT(String text) {
   static String response = "";
   Serial.println(InitBuffer);
@@ -495,22 +449,93 @@ void exec_chatGPT(String text) {
   Serial.println("====================");
 
 }
-/*
-String Role_JSON = "";
-void exec_chatGPT1(String text) {
-  static String response = "";
-  init_chat_doc(Role_JSON.c_str());
 
-  String role = chat_doc["messages"][0]["role"];
-  if(role == "user") {chat_doc["messages"][0]["content"] = text;}
+
+void exec_chatGPT_image(String text, const char *base64_buf) {
+  static String response = "";
+  Serial.println(InitBuffer);
+  init_chat_doc(InitBuffer.c_str());
+
+#if 0  
+  // 質問をチャット履歴に追加
+  chatHistory.push_back(text);
+   // チャット履歴が最大数を超えた場合、古い質問と回答を削除
+  if (chatHistory.size() > MAX_HISTORY * 2)
+  {
+    chatHistory.pop_front();
+    chatHistory.pop_front();
+  }
+
+  for (int i = 0; i < chatHistory.size(); i++)
+  {
+    JsonArray messages = chat_doc["messages"];
+    JsonObject systemMessage1 = messages.createNestedObject();
+    if(i % 2 == 0) {
+      systemMessage1["role"] = "user";
+    } else {
+      systemMessage1["role"] = "assistant";
+    }
+    systemMessage1["content"] = chatHistory[i];
+  }
+#endif
+
+  //このようなJSONを作成する
+  // messages=[
+  //      {"role": "user", "content": [
+  //          {"type": "text", "text": "この三角形の面積は？"},
+  //          {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64_image}"}}
+  //      ]}
+  //  ],
+
+  String image_url_str = String("data:image/jpeg;base64,") + String(base64_buf); 
+
+  JsonArray messages = chat_doc["messages"];
+  JsonObject systemMessage1 = messages.createNestedObject();
+  systemMessage1["role"] = "user";
+  JsonObject content_text = systemMessage1["content"].createNestedObject();
+  content_text["type"] = "text";
+  content_text["text"] = text;
+  JsonObject content_image = systemMessage1["content"].createNestedObject();
+  content_image["type"] = "image_url";
+  content_image["image_url"]["url"] = image_url_str.c_str();
+
   String json_string;
   serializeJson(chat_doc, json_string);
+  if(speech_text=="" && speech_text_buffer == "") {
+    response = chatGpt(json_string);
+    speech_text = response;
+    // 返答をチャット履歴に追加
+    //chatHistory.push_back(response);
+  } else {
+    response = "busy";
+  }
+  // Serial.printf("chatHistory.max_size %d \n",chatHistory.max_size());
+  // Serial.printf("chatHistory.size %d \n",chatHistory.size());
+  // for (int i = 0; i < chatHistory.size(); i++)
+  // {
+  //   Serial.print(i);
+  //   Serial.println("= "+chatHistory[i]);
+  // }
+  serializeJsonPretty(chat_doc, json_string);
+  Serial.println("====================");
+  Serial.println(json_string);
+  Serial.println("====================");
 
-  response = chatGpt(json_string);
-  speech_text = response;
-//  server.send(200, "text/html", String(HEAD)+String("<body>")+response+String("</body>"));
 }
-*/
+
+
+void handle_chat() {
+  static String response = "";
+  // tts_parms_no = 1;
+  String text = server.arg("text");
+  String speaker = server.arg("voice");
+  if(speaker != "") {
+    TTS_PARMS = TTS_SPEAKER + speaker;
+  }
+
+  exec_chatGPT(text);
+}
+
 void handle_apikey() {
   // ファイルを読み込み、クライアントに送信する
   server.send(200, "text/html", APIKEY_HTML);
@@ -847,7 +872,7 @@ static box_t box_servo;
 static box_t box_stt;
 static box_t box_BtnA;
 static box_t box_BtnC;
-#if defined(ENABLE_FACE_DETECT)
+#if defined(ENABLE_CAMERA)
 static box_t box_subWindow;
 #endif
 
@@ -929,7 +954,7 @@ String SpeechToText(bool isGoogle){
 }
 
 
-#if defined(ENABLE_FACE_DETECT)
+#if defined(ENABLE_CAMERA)
 esp_err_t camera_init(){
 
     //initialize the camera
@@ -1034,7 +1059,7 @@ bool camera_capture_and_face_detect(){
     return ESP_FAIL;
   }
 
-
+#if defined(ENABLE_FACE_DETECT)
   int face_id = 0;
 
 #if TWO_STAGE
@@ -1064,6 +1089,7 @@ bool camera_capture_and_face_detect(){
     draw_face_boxes(&rfb, &results, face_id);
 
   }
+#endif //ENABLE_FACE_DETECT
 
   if(isSubWindowON){
     avatar.updateSubWindow(fb->buf);
@@ -1080,7 +1106,7 @@ bool camera_capture_and_face_detect(){
 
   return isDetected;
 }
-#endif  //ENABLE_FACE_DETECT
+#endif  //ENABLE_CAMERA
 
 
 
@@ -1094,6 +1120,8 @@ void setup()
 //cfg.external_spk_detail.omit_spk_hat    = true; // exclude SPK HAT
 //  cfg.output_power = true;
   M5.begin(cfg);
+
+  chat_doc = SpiRamJsonDocument(1024*50);
 
   preallocateBuffer = (uint8_t *)malloc(preallocateBufferSize);
   if (!preallocateBuffer) {
@@ -1314,6 +1342,10 @@ void setup()
   server.begin();
   Serial.println("HTTP server started");
   M5.Lcd.println("HTTP server started");  
+
+  ftpSrv.begin("stackchan","stackchan");    //username, password for ftp.  set ports in ESP8266FtpServer.h  (default 21, 50009 for PASV)
+  Serial.println("FTP server started");
+  M5.Lcd.println("FTP server started");  
   
   Serial.printf_P(PSTR("/ to control the chatGpt Server.\n"));
   M5.Lcd.print("/ to control the chatGpt Server.\n");
@@ -1323,7 +1355,7 @@ void setup()
   mp3 = new AudioGeneratorMP3();
 //  mp3->RegisterStatusCB(StatusCallback, (void*)"mp3");
 
-#if defined(ENABLE_FACE_DETECT)
+#if defined(ENABLE_CAMERA)
   avatar.init(16);
 #else
   avatar.init();
@@ -1335,7 +1367,7 @@ void setup()
 //  M5.Speaker.setVolume(200);
   box_servo.setupBox(80, 120, 80, 80);
 
-#if defined(ENABLE_FACE_DETECT)
+#if defined(ENABLE_CAMERA)
   box_stt.setupBox(107, 0, M5.Display.width()-107, 80);
   box_subWindow.setupBox(0, 0, 107, 80);
 #else
@@ -1345,7 +1377,7 @@ void setup()
   box_BtnA.setupBox(0, 100, 40, 60);
   box_BtnC.setupBox(280, 100, 40, 60);
 
-#if defined(ENABLE_FACE_DETECT)
+#if defined(ENABLE_CAMERA)
   camera_init();
   avatar.set_isSubWindowEnable(true);
   //avatar.setBatteryIcon(true);
@@ -1389,8 +1421,7 @@ void switch_monologue_mode(){
     Serial.println("mp3 begin");
 }
 
-// robo8080さんの音声認識を関数化
-void voice_recognition(void)
+void stt_and_chat(const char *base64_buf = NULL)
 {
   M5.Speaker.tone(1000, 100);
   delay(200);
@@ -1420,7 +1451,13 @@ void voice_recognition(void)
   if(ret != "") {
     Serial.println(ret);
     if (!mp3->isRunning() && speech_text=="" && speech_text_buffer == "") {
-      exec_chatGPT(ret);
+      if(base64_buf != NULL){
+        exec_chatGPT_image(ret, base64_buf);
+
+      }
+      else{
+        exec_chatGPT(ret);
+      }
     }
   } else {
     Serial.println("音声認識失敗");
@@ -1433,6 +1470,53 @@ void voice_recognition(void)
   M5.Speaker.begin();
 }
 
+bool camera_capture_and_chat(void)
+{
+  //acquire a frame
+  M5.In_I2C.release();
+  camera_fb_t * fb = esp_camera_fb_get();
+  if (!fb) {
+    Serial.println("Camera Capture Failed");
+    return false;
+  }
+
+  size_t jpg_buf_len = 0;
+  uint8_t *jpg_buf   = NULL;
+  int ret;
+  bool jpeg_converted = frame2jpg(fb, 80, &jpg_buf, &jpg_buf_len);
+  esp_camera_fb_return(fb);
+  fb = NULL;
+  if (!jpeg_converted) {
+    Serial.println("JPEG compression failed");
+    return false;
+  }
+
+#if 1 //debug
+  File fdst = SPIFFS.open("/capture.jpg", FILE_WRITE);
+  if ((ret = fdst.write(jpg_buf, jpg_buf_len)) < jpg_buf_len) {
+    Serial.printf("write spiffs failed: %d - %d\n", ret, jpg_buf_len);
+    return false;
+  }
+#endif
+
+
+  String enc = base64::encode(jpg_buf, jpg_buf_len);
+
+#if 1 //debug
+  fdst = SPIFFS.open("/capture_base64.txt", FILE_WRITE);
+  if ((ret = fdst.write((const uint8_t*)enc.c_str(), enc.length())) < enc.length()) {
+    Serial.printf("write spiffs failed: %d - %d\n", ret, enc.length());
+    return false;
+  }
+#endif
+
+  stt_and_chat(enc.c_str());
+
+  free(jpg_buf);
+  jpg_buf = NULL;
+  
+  return true;
+}
 
 void loop()
 {
@@ -1449,7 +1533,7 @@ void loop()
   }
 
 
-#if defined(ENABLE_FACE_DETECT)
+#if defined(ENABLE_CAMERA)
   //しゃべっていないときに顔検出を実行し、顔が検出されれば音声認識を開始。
   if (!mp3->isRunning()) {
     bool isFaceDetected;
@@ -1459,7 +1543,7 @@ void loop()
 
         avatar.set_isSubWindowEnable(false);
     
-        voice_recognition();                    //音声認識
+        stt_and_chat();                    //音声認識
         //exec_chatGPT(random_words[random(18)]);   //独り言
 
         // フレームバッファを読み捨てる（ｽﾀｯｸﾁｬﾝが応答した後に、過去のフレームで顔検出してしまうのを防ぐため）
@@ -1479,7 +1563,7 @@ void loop()
       }
     }
   }
-#endif
+#endif  //ENABLE_CAMERA
 
 
   if (M5.BtnA.wasPressed())
@@ -1507,67 +1591,38 @@ void loop()
     {          
       if (box_stt.contain(t.x, t.y)&&(!mp3->isRunning()))
       {
-#if defined(ENABLE_FACE_DETECT)
+#if defined(ENABLE_CAMERA)
         avatar.set_isSubWindowEnable(false);
-#endif
 
-        voice_recognition();
-#if 0
-        M5.Speaker.tone(1000, 100);
-        delay(200);
-        M5.Speaker.end();
-        bool prev_servo_home = servo_home;
-        random_speak = true;
-        random_time = -1;
-#ifdef USE_SERVO
-        servo_home = true;
-#endif
-        avatar.setExpression(Expression::Happy);
-        avatar.setSpeechText("御用でしょうか？");
-        M5.Speaker.end();
-        String ret;
-        if(OPENAI_API_KEY != STT_API_KEY){
-          Serial.println("Google STT");
-          ret = SpeechToText(true);
-        } else {
-          Serial.println("Whisper STT");
-          ret = SpeechToText(false);
+        if(isSubWindowON){
+          bool ret;
+          ret = camera_capture_and_chat();
         }
-#ifdef USE_SERVO
-        servo_home = prev_servo_home;
-#endif
-        Serial.println("音声認識終了");
-        Serial.println("音声認識結果");
-        if(ret != "") {
-          Serial.println(ret);
-          if (!mp3->isRunning() && speech_text=="" && speech_text_buffer == "") {
-            exec_chatGPT(ret);
-          }
-        } else {
-          Serial.println("音声認識失敗");
-          avatar.setExpression(Expression::Sad);
-          avatar.setSpeechText("聞き取れませんでした");
-          delay(2000);
-          avatar.setSpeechText("");
-          avatar.setExpression(Expression::Neutral);
-        } 
-        M5.Speaker.begin();
-#endif
+        else{
+          stt_and_chat();
+        }
+
+        avatar.set_isSubWindowEnable(isSubWindowON);
+#else
+        stt_and_chat();
+#endif //ENABLE_CAMERA
       }
 #ifdef USE_SERVO
       if (box_servo.contain(t.x, t.y))
       {
         servo_home = !servo_home;
+#if defined(ENABLE_FACE_DETECT)
         g_face_centroid_x = CENTER_X;
         g_face_centroid_y = CENTER_Y;
         g_angle_x = 0;
         g_angle_y = 0;
+#endif
         M5.Speaker.tone(1000, 100);
       }
 #endif
       if (box_BtnA.contain(t.x, t.y))
       {
-#if defined(ENABLE_FACE_DETECT)
+#if defined(ENABLE_CAMERA)
         isSilentMode = !isSilentMode;
         if(isSilentMode){
           avatar.setSpeechText("サイレントモード");
@@ -1584,19 +1639,19 @@ void loop()
       }
       if (box_BtnC.contain(t.x, t.y))
       {
-#if defined(ENABLE_FACE_DETECT)
+#if defined(ENABLE_CAMERA)
         avatar.set_isSubWindowEnable(false);
 #endif
         M5.Speaker.tone(1000, 100);
         report_batt_level();
       }
-#if defined(ENABLE_FACE_DETECT)
+#if defined(ENABLE_CAMERA)
       if (box_subWindow.contain(t.x, t.y))
       {
         isSubWindowON = !isSubWindowON;
         avatar.set_isSubWindowEnable(isSubWindowON);
       }
-#endif //ENABLE_FACE_DETECT
+#endif //ENABLE_CAMERA
     }
   }
 #endif
@@ -1622,15 +1677,16 @@ void loop()
       avatar.setExpression(Expression::Neutral);
       speech_text_buffer = "";
 
-#if defined(ENABLE_FACE_DETECT)
+#if defined(ENABLE_CAMERA)
       if(isSubWindowON){
         avatar.set_isSubWindowEnable(true);
       }
-#endif  //ENABLE_FACE_DETECT
+#endif  //ENABLE_CAMERA
     }
     delay(1);
   } else {
-  server.handleClient();
+    server.handleClient();
+    ftpSrv.handleFTP();
   }
 //delay(100);
 }
