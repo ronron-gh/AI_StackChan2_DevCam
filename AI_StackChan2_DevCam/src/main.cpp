@@ -966,6 +966,10 @@ esp_err_t camera_init(){
         return err;
     }
 
+    sensor_t *s = esp_camera_sensor_get();
+    s->set_hmirror(s, 0);        // 左右反転
+
+
     return ESP_OK;
 }
 
